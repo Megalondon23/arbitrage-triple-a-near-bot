@@ -10,6 +10,15 @@ let jobStatus = 'Idle';
 let supportedBlockchain = ['ETH', 'ARB', "OPT"];
 // supported pairs; only USDT/ETH for now
 let supportedPairs = ['USDT/ETH'];
+initialBalances = {
+    'ETH': 0,
+    'OPT': 0,
+    'ARB': 0
+};
+initialBlockchain = "OPT";
+
+
+// const Eth = new Ethereum('https://rpc2.sepolia.org', Sepolia);
 
 
 // Simulate a background job running every second
@@ -17,7 +26,7 @@ setInterval(async () => {
     jobStatus = 'Running';
     await findCryptoArbitrage();
     jobStatus = 'Idle';
-}, 1000);
+}, 10000);
 
 async function findArbitrageForPair(pair) {
     // find biggest price difference for given pair between blockchains and return it
@@ -43,7 +52,10 @@ async function findArbitrageForPair(pair) {
                     bestArbitrage = {
                         buyFrom: prices[j].blockchain,
                         sellTo: prices[i].blockchain,
-                        priceDiff
+                        priceDiff,
+                        // relative diff
+                        priceDiffPercent: (prices[i].price - prices[j].price) / prices[j].price,
+                        pair
                     };
                 }
             }
@@ -105,12 +117,13 @@ async function getPriceForBlockchain(blockchain) {
 }
 
 
-function findTradeRoute(arbitrage) {
+function findTradeRoute(initialBlockchain, arbitrage) {
     // Determine the optimal route for the trade
     return {
         buyBlockchain: arbitrage.buyFrom,
         sellBlockchain: arbitrage.sellTo,
-        priceDifference: arbitrage.priceDiff
+        priceDifference: arbitrage.priceDiff,
+        priceDifferencePercent: arbitrage.priceDiffPercent,
     };
 }
 
@@ -120,8 +133,37 @@ function getGasPrice(tradeRoute) {
 }
 
 function executeTrade(tradeRoute) {
-    // Stub function to execute the trade
-    console.log(`Executing trade: Buy on ${tradeRoute.buyBlockchain}, Sell on ${tradeRoute.sellBlockchain}`);
+    console.log(JSON.stringify(tradeRoute));
+
+    const Eth = new Ethereum('https://rpc2.sepolia.org', Sepolia);
+    const payload = createPayload(sender, receiver, amount);
+
+    // Send the transaction
+    Eth.sendTransaction(payload.transaction, payload.payload);
+}
+
+async function createPayload(sender, receiver, amount) {
+    const common = new Common({ chain: this.chain_id });
+
+    // Get the nonce & gas price
+    const nonce = await this.web3.eth.getTransactionCount(sender);
+    const { maxFeePerGas, maxPriorityFeePerGas } = await this.queryGasPrice();
+
+    // Construct transaction
+    const transactionData = {
+        nonce,
+        gasLimit: 21000,
+        maxFeePerGas,
+        maxPriorityFeePerGas,
+        to: receiver,
+        value: BigInt(this.web3.utils.toWei(amount, "ether")),
+        chain: this.chain_id,
+    };
+
+    // Return the message hash
+    const transaction = FeeMarketEIP1559Transaction.fromTxData(transactionData, { common });
+    const payload = transaction.getHashedMessageToSign();
+    return { transaction, payload };
 }
 
 async function findCryptoArbitrage() {
@@ -129,11 +171,14 @@ async function findCryptoArbitrage() {
     for (let i = 0; i < supportedPairs.length; i++) {
         let pair = supportedPairs[i];
         let arbitrage = await findArbitrageForPair(pair);
+
         if (!arbitrage || arbitrage.priceDiff < 1.0) {
             continue;
         }
+        // print arbitrage % price difference
+        console.log(`Arbitrage opportunity found for ${arbitrage}`);
 
-        let tradeRoute = findTradeRoute(arbitrage);
+        let tradeRoute = findTradeRoute(initialBlockchain, arbitrage);
         let gasPrice = getGasPrice(tradeRoute);
 
         if (gasPrice > arbitrage.priceDiff) {
